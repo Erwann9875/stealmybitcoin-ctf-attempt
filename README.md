@@ -61,12 +61,12 @@ by an HTTPS interception proxy. The server's worker scheduling is still not a
 protocol guarantee, so the runner validates every stage and retries the
 complete chain when another worker answers.
 
-This method succeeded in the five-worker local lab on attempt 2 without a
+This method succeeded in the five-worker local lab without a
 manual restart:
 
 ```text
-attempt=2 statuses=200/200/200/200/200/200
-main=0x7f77b3a00000 php=0x564e5ec00000 zif_system=0x564e5f10dd70
+attempt=6 statuses=200/200/200/200/200/200
+main=0x7feec2a00000 php=0x56061d400000 zif_system=0x56061d90dd70
 response=uid=0(root) gid=0(root)
 LOCAL_PHP2SHELL_RCE_PROOF uid=0 gid=0
 RESULT=REMOTE_RCE_CONFIRMED
@@ -180,6 +180,11 @@ gh run watch
 The workflow is `workflow_dispatch` only. Its one-day evidence artifact is
 uploaded whether the proof succeeds or stops after a validated leak.
 
+`--worker-stride N` interleaves `N - 1` harmless readiness requests between
+the exploit stages. It is a bounded scheduler calibration for a server that
+rotates connections across a known worker count. The default is `1`; the
+workflow exposes 4, 5, and 6 only as explicit manual choices.
+
 ## Why the endpoint must reach PHP
 
 The bug runs during PHP request startup, multipart parsing, and request cleanup,
@@ -279,10 +284,12 @@ is:
 "V" * 7 || little_endian_u64(leak_length) || "a"
 ```
 
-Six more 16-byte values stabilize the allocation geometry. B1 reclaims the
-stale A1 session ID and forges its `zend_string` length. PHP URL-encodes that ID
-into `Set-Cookie`, copying adjacent allocator contents that include heap and PHP
-PIE pointers.
+The original proof uses six more 16-byte values to stabilize the allocation
+geometry. The remote runner defaults to five because local calibration placed
+an additional PHP code pointer earlier in the bounded leak; `--b1-fillers`
+retains the other profiles. B1 reclaims the stale A1 session ID and forges its
+`zend_string` length. PHP URL-encodes that ID into `Set-Cookie`, copying
+adjacent allocator contents that include heap and PHP PIE pointers.
 
 The single-worker profile uses `0x800`, yielding 2,048 decoded bytes. The nginx
 profile defaults to `0x440`, yielding 1,088 bytes. The shorter value keeps the
