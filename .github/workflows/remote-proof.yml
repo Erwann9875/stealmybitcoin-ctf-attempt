@@ -2,6 +2,24 @@ name: Remote proof
 
 on:
   workflow_dispatch:
+    inputs:
+      leak_length:
+        description: Decoded B1 cookie length
+        type: choice
+        options:
+          - "0x440"
+          - "0x480"
+          - "0x500"
+          - "0x540"
+        default: "0x440"
+      pre_parameters:
+        description: A1 query allocation shift
+        type: choice
+        options:
+          - "8"
+          - "4"
+          - "12"
+        default: "8"
 
 permissions:
   contents: read
@@ -17,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run independent exploit chain
-        run: python3 remote_proof.py --direct --attempts 6 --timeout 20 --retry-delay 5
+        run: python3 remote_proof.py --direct --attempts 4 --timeout 20 --retry-delay 5 --leak-length ${{ inputs.leak_length }} --pre-parameters ${{ inputs.pre_parameters }}
       - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@v4

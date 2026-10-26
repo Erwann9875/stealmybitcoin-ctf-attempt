@@ -78,6 +78,9 @@ class SharedReader:
     def readline(self, *args: object, **kwargs: object) -> bytes:
         return self.stream.readline(*args, **kwargs)
 
+    def flush(self) -> None:
+        return None
+
     def close(self) -> None:
         return None
 
