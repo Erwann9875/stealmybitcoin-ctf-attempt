@@ -1,0 +1,9 @@
+FROM php:8.4.26-fpm-alpine3.23@sha256:b2a757dc9d3c05a6a97c05cacd26b981b6225e65cc78da6ccb2ea0a8b4b6196b
+
+WORKDIR /app
+COPY lab/ /app/
+COPY print-flag /usr/local/bin/print-flag
+RUN chmod 0755 /usr/local/bin/print-flag
+
+EXPOSE 8000
+CMD ["php", "-S", "0.0.0.0:8000"]

