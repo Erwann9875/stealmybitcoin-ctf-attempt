@@ -42,13 +42,17 @@ The initial proof opened a new TCP connection for every request. That is
 deterministic for one `php -S` worker after a container restart, but unreliable
 behind nginx because consecutive requests can reach different workers.
 
-The new runner opens one HTTP/1.1 connection and performs every exchange in
-strict order:
+The new runner opens one HTTP/1.1 connection and uses two bounded pipelines:
 
-1. send one stage;
-2. read its complete response;
-3. validate the expected OOM or leak;
-4. send the next stage on the same connection.
+1. send seed, readiness, A1, and B1 in one socket write;
+2. read and validate their four responses in order;
+3. derive the heap and PHP addresses;
+4. send A2 and the address-dependent B2 in one socket write;
+5. read and validate both responses and the command callback.
+
+Queuing the next request before the previous response returns to the client
+removes the network gap in which another visitor could take the recently idle
+PHP worker. `--sequential` remains available for transport diagnostics.
 
 The compose lab hashes nginx's upstream choice from the downstream connection,
 so one persistent client connection stays on one of five PHP containers. On the
@@ -57,12 +61,12 @@ by an HTTPS interception proxy. The server's worker scheduling is still not a
 protocol guarantee, so the runner validates every stage and retries the
 complete chain when another worker answers.
 
-This method succeeded in the five-worker local lab on attempt 1 without a
+This method succeeded in the five-worker local lab on attempt 2 without a
 manual restart:
 
 ```text
-attempt=1 statuses=200/200/200/200/200/200
-main=0x7fe511000000 php=0x560f58800000 zif_system=0x560f58d0dd70
+attempt=2 statuses=200/200/200/200/200/200
+main=0x7f77b3a00000 php=0x564e5ec00000 zif_system=0x564e5f10dd70
 response=uid=0(root) gid=0(root)
 LOCAL_PHP2SHELL_RCE_PROOF uid=0 gid=0
 RESULT=REMOTE_RCE_CONFIRMED
@@ -87,7 +91,7 @@ direct route is available. The manual GitHub workflow uses that mode.
 | `print-flag` | Local proof command that prints the container UID and GID. |
 | `exploit_primitives.py` | Multipart builders, forged Zend layouts, binary profiles, and leak parsing. |
 | `exploit_chain.py` | Deterministic payload set, exact sizes, and request-size validation. |
-| `http_transport.py` | Persistent HTTP/1.1 client with optional CONNECT proxy support. |
+| `http_transport.py` | Persistent pipelined HTTP/1.1 client with optional CONNECT proxy support. |
 | `lab_runtime.py` | Docker lifecycle and one-shot local HTTP helpers. |
 | `local_proof.py` | Original restart-based single-worker proof. |
 | `remote_proof.py` | Persistent multi-worker and remote proof runner. |

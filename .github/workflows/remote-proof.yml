@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run independent exploit chain
-        run: python3 remote_proof.py --direct --attempts 12 --timeout 30
+        run: python3 remote_proof.py --direct --attempts 6 --timeout 20 --retry-delay 5
       - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@v4

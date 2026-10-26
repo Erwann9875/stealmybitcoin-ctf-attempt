@@ -33,6 +33,22 @@ class HttpTarget:
         return f"{self.scheme}://{self.authority}"
 
 @dataclass(frozen=True, slots=True)
+class HttpRequest:
+    method: str
+    path: str
+    body: bytes | None = None
+    boundary: bytes | None = None
+    close: bool = False
+
+    @classmethod
+    def get(cls, path: str, close: bool = False) -> HttpRequest:
+        return cls("GET", path, close=close)
+
+    @classmethod
+    def post(cls, path: str, body: bytes, boundary: bytes, close: bool = False) -> HttpRequest:
+        return cls("POST", path, body, boundary, close)
+
+@dataclass(frozen=True, slots=True)
 class HttpResponse:
     status: int
     reason: str
@@ -52,54 +68,103 @@ class HttpResponse:
                 return urllib.parse.unquote_to_bytes(encoded.replace("+", " "))
         return b""
 
+class SharedReader:
+    def __init__(self, stream: object):
+        self.stream = stream
+
+    def read(self, *args: object, **kwargs: object) -> bytes:
+        return self.stream.read(*args, **kwargs)
+
+    def readline(self, *args: object, **kwargs: object) -> bytes:
+        return self.stream.readline(*args, **kwargs)
+
+    def close(self) -> None:
+        return None
+
+class SharedSocket:
+    def __init__(self, reader: SharedReader):
+        self.reader = reader
+
+    def makefile(self, *_args: object, **_kwargs: object) -> SharedReader:
+        return self.reader
+
 class PersistentHttpClient:
     def __init__(self, target: HttpTarget, timeout: float, use_proxy: bool = True):
         self.target = target
         self.timeout = timeout
         self.use_proxy = use_proxy
         self.connection: http.client.HTTPConnection | None = None
+        self.stream: object | None = None
+        self.reader: SharedReader | None = None
         self.absolute_form = False
         self.closed_by_peer = False
 
     def __enter__(self) -> PersistentHttpClient:
         self.connection = self._create_connection()
         self.connection.connect()
+        if self.connection.sock is None:
+            raise ConnectionError("HTTP connection did not yield a socket")
+        self.connection.sock.settimeout(self.timeout)
+        self.stream = self.connection.sock.makefile("rb")
+        self.reader = SharedReader(self.stream)
         return self
 
     def __exit__(self, *_args: object) -> None:
+        if self.stream is not None:
+            self.stream.close()
         if self.connection is not None:
             self.connection.close()
 
     def get(self, path: str, close: bool = False) -> HttpResponse:
-        return self.request("GET", path, None, None, close)
+        return self.pipeline((HttpRequest.get(path, close),))[0]
 
     def post(self, path: str, body: bytes, boundary: bytes, close: bool = False) -> HttpResponse:
-        return self.request("POST", path, body, boundary, close)
+        return self.pipeline((HttpRequest.post(path, body, boundary, close),))[0]
 
-    def request(self, method: str, path: str, body: bytes | None, boundary: bytes | None, close: bool) -> HttpResponse:
-        if self.connection is None:
+    def pipeline(self, requests: tuple[HttpRequest, ...]) -> tuple[HttpResponse, ...]:
+        if self.connection is None or self.connection.sock is None or self.reader is None:
             raise RuntimeError("HTTP client is not connected")
         if self.closed_by_peer:
             raise ConnectionError("the previous response closed the persistent connection")
-        if not path.startswith("/") or not path.isascii():
+        if not requests:
+            raise ValueError("pipeline must contain at least one request")
+        frames = tuple(self._frame(request) for request in requests)
+        self.connection.sock.sendall(b"".join(frames))
+        responses = tuple(self._response() for _ in requests)
+        self.closed_by_peer = responses[-1].closes_connection
+        return responses
+
+    def _frame(self, request: HttpRequest) -> bytes:
+        if not request.path.startswith("/") or not request.path.isascii():
             raise ValueError("request path must be absolute and ASCII")
-        target = self.target.origin + path if self.absolute_form else path
-        self.connection.putrequest(method, target, skip_host=True, skip_accept_encoding=True)
-        self.connection.putheader("Host", self.target.authority)
-        self.connection.putheader("Connection", "close" if close else "keep-alive")
-        if body is not None:
-            if boundary is None:
-                raise ValueError("multipart boundary is required for a request body")
-            self.connection.putheader("Content-Length", str(len(body)))
-            self.connection.putheader("Content-Type", "multipart/form-data; boundary=" + boundary.decode("ascii"))
-        self.connection.endheaders(body)
-        source = self.connection.getresponse()
+        target = self.target.origin + request.path if self.absolute_form else request.path
+        headers = (
+            f"{request.method} {target} HTTP/1.1\r\n"
+            f"Host: {self.target.authority}\r\n"
+            f"Connection: {'close' if request.close else 'keep-alive'}\r\n"
+        )
+        if request.body is None:
+            if request.boundary is not None:
+                raise ValueError("bodyless request cannot have a multipart boundary")
+            return headers.encode("ascii") + b"\r\n"
+        if request.boundary is None:
+            raise ValueError("multipart boundary is required for a request body")
+        entity_headers = (
+            f"Content-Length: {len(request.body)}\r\n"
+            f"Content-Type: multipart/form-data; boundary={request.boundary.decode('ascii')}\r\n\r\n"
+        )
+        return headers.encode("ascii") + entity_headers.encode("ascii") + request.body
+
+    def _response(self) -> HttpResponse:
+        if self.reader is None:
+            raise RuntimeError("HTTP response reader is not available")
+        source = http.client.HTTPResponse(SharedSocket(self.reader))
+        source.begin()
         try:
-            response_body = source.read()
+            body = source.read()
         except http.client.IncompleteRead as error:
-            response_body = error.partial
-        self.closed_by_peer = source.will_close
-        return HttpResponse(source.status, source.reason, tuple(source.getheaders()), response_body, source.will_close)
+            body = error.partial
+        return HttpResponse(source.status, source.reason, tuple(source.getheaders()), body, source.will_close)
 
     def _create_connection(self) -> http.client.HTTPConnection:
         proxy = self._proxy()
