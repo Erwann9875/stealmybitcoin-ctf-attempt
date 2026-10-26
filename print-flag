@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'LOCAL_PHP2SHELL_RCE_PROOF uid=%s gid=%s\n' "$(id -u)" "$(id -g)"
