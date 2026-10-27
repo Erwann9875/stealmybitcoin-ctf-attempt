@@ -301,11 +301,17 @@ during rollout, but neither replaces the security update.
 ## Research provenance
 
 The initial implementation was committed as
-`5db38b8fd7f9f959465eb90648614a7e037ed47f` before the later comparison with
-KillaBoi's StealMyBitcoin PoC. The branch was returned to that independent
-state before the nginx transport, allocator calibration, and verified remote
-run were completed. No source or payload from that repository is included
-here.
+`5db38b8fd7f9f959465eb90648614a7e037ed47f` before KillaBoi's
+StealMyBitcoin PoC was reviewed for comparison. That review contaminated the
+working research state with knowledge of another implementation. Once this
+was identified, the affected work was discarded and the branch was restored
+to the last independently developed commit.
+
+Development then resumed from that clean baseline. The nginx transport,
+allocator calibration, exploit adjustments, and verified remote run were
+reproduced from our own analysis and the primary or public research sources
+listed below. No source code or payload from KillaBoi's repository is included
+in this project.
 
 The work was derived from PHP source and advisories, the public NCSC-NL
 php2shell material, 9bie's ASLR-bypass research, binary inspection of the
