@@ -9,11 +9,13 @@ The proof reaches a controlled `system()` call and executes `print-flag`. It
 does not treat a crash, an OOM, a leaked cookie, or an HTTP 502 as proof of code
 execution.
 
-The current implementation has two recorded local results:
+The current implementation has three recorded local results:
 
 - [`proof.log`](proof.log) records the original single-worker Docker proof;
 - [`nginx-proof.log`](nginx-proof.log) records the same exploit behind nginx
-  with five independently supervised PHP workers.
+  with five independently supervised PHP workers;
+- [`restart-proof.log`](restart-proof.log) records the complete hot-worker,
+  supervised-restart, leak, and `print-flag` chain.
 
 `remote_proof.py` writes a separate `remote-proof.log` only after it receives a
 200 response containing two random nonce markers, `id` output, and the output
@@ -95,6 +97,7 @@ direct route is available. The manual GitHub workflow uses that mode.
 | `lab_runtime.py` | Docker lifecycle and one-shot local HTTP helpers. |
 | `local_proof.py` | Original restart-based single-worker proof. |
 | `remote_proof.py` | Persistent multi-worker and remote proof runner. |
+| `restart_proof.py` | Restart-assisted proof for an already hot supervised worker. |
 | `.github/workflows/remote-proof.yml` | Manually dispatched direct-network proof run. |
 
 The Python source contains no explanatory comments or docstrings. The protocol
@@ -147,6 +150,74 @@ The compose service has a restart policy for the case where corruption takes
 down the master process, matching the external supervision expected for a CTF
 service.
 
+## Reproduce the hot-worker restart-assisted proof
+
+The original bounded leak is deterministic on a newly started worker. A hot
+worker has a different allocator history. Local memory inspection established
+the exact difference:
+
+- `PS(id)` still points to `main_chunk + 0x59000`;
+- a fresh worker has `zval_ptr_dtor` at leak offsets `+0x280` and `+0x398`;
+- after one ordinary PHP request, those forward copies are gone;
+- three remaining copies sit at approximately `-0xfe8`, `-0xfb0`, and
+  `-0xed0`, before the string data and therefore outside a forward over-read.
+
+The hot-worker leak still returns 1,088 bytes and a stable heap cluster, but it
+contains no PHP PIE anchor. Increasing the forged length to `0x1000` did not
+reach one. Larger values crossed allocator mappings or exceeded practical
+upstream-header handling and terminated the worker.
+
+`restart_proof.py` turns that terminating case into a complete network-only
+chain. It does not call Docker, access the host, open parallel connections, or
+hold workers busy:
+
+1. open one persistent HTTP/1.1 connection and record the selected upstream
+   when nginx exposes `X-Upstream`;
+2. run seed, readiness, A1, and a crash B1 with a `0x4000` forged length;
+3. require nginx to return 502 without closing the downstream connection;
+4. wait for supervision to restart the same PHP service and for nginx's
+   upstream failure interval to expire;
+5. pipeline a second seed, readiness, A1, and bounded B1 as the restarted
+   process's first requests;
+6. resolve the heap and PHP bases, then pipeline A2 and B2;
+7. accept success only after HTTP 200 contains the nonce-delimited `id` and
+   `print-flag` output.
+
+The crash and proof phases must not reuse a session ID. The terminating B1 can
+leave a nonempty `/tmp/sess_<id>` file inside the PHP container. That file
+survives a process restart and changes the second chain's allocator geometry.
+The runner therefore generates three independent IDs: one byte for the crash
+phase, a different one byte for the leak phase, and 32 bytes for A2/B2. Their
+lengths preserve the original ZendMM size classes and all four request sizes.
+
+Run the complete proof against the local five-worker lab:
+
+```bash
+docker compose up -d --build
+python3 restart_proof.py --direct
+docker compose down
+```
+
+The recorded run pinned every request to one upstream and produced:
+
+```text
+recycle statuses=200/200/200/502 upstream=172.19.0.2:8000
+crash_statuses=200/200/200/502
+proof_statuses=200/200/200/200/200/200
+upstream=172.19.0.2:8000
+main=0x7fe5da400000 php=0x55a80e800000 zif_system=0x55a80ed0dd70
+response=uid=0(root) gid=0(root) groups=0(root),0(root),1(bin),2(daemon),3(sys),4(adm),6(disk),10(wheel),11(floppy),20(dialout),26(tape),27(video)
+LOCAL_PHP2SHELL_RCE_PROOF uid=0 gid=0
+RESULT=RESTART_ASSISTED_RCE_CONFIRMED
+```
+
+The default target is the local lab. A nonlocal target must explicitly replace
+`--target`. The method deliberately terminates one PHP process and relies on
+external supervision, a stable downstream-to-upstream mapping, a 502 response
+that preserves the client connection, and a restart interval compatible with
+`--restart-delay`. It is appropriate only when that behavior is authorized by
+the target's rules.
+
 ## Run against the CTF endpoint
 
 The remote profile is for the x86-64 Alpine PHP 8.4.26 binary independently
@@ -179,6 +250,12 @@ gh run watch
 
 The workflow is `workflow_dispatch` only. Its one-day evidence artifact is
 uploaded whether the proof succeeds or stops after a validated leak.
+
+The restart-assisted runner is intentionally absent from that workflow. The
+published challenge terms prohibit denial of service, resource exhaustion, and
+sabotage. Its remote use would deliberately terminate a PHP worker, so the
+repository records and explains the local proof without presenting it as a
+remote solve or a recovered wallet flag.
 
 `--worker-stride N` interleaves `N - 1` harmless readiness requests between
 the exploit stages. It is a bounded scheduler calibration for a server that
@@ -249,10 +326,13 @@ use `Transfer-Encoding: chunked`, a request-smuggling discrepancy, or a
 
 ## Stage 1: seed
 
-The 305,042-byte seed contains `PHPSESSID=a`,
+The 305,042-byte default seed contains `PHPSESSID=a`,
 `PHP_SESSION_UPLOAD_PROGRESS=k0`, one real file with a 32,768-byte field name,
 and 880 depth-64 nested empty-file parts. It prepares ZendMM and causes a
 controlled OOM while upload progress is active. The worker stays alive.
+
+The restart-assisted runner substitutes another one-byte session ID without
+changing the request size or allocation class.
 
 The readiness GET follows the seed. It is part of the calibrated allocator
 sequence, not just a health check.
@@ -291,6 +371,10 @@ remote runner cycles those values across attempts. B1 reclaims the stale A1
 session ID and forges its `zend_string` length. PHP URL-encodes that ID into
 `Set-Cookie`, copying adjacent allocator contents that include heap and PHP PIE
 pointers.
+
+Changing the one-byte session ID changes only the session filename and payload
+bytes. It does not change B1's size or ZendMM allocation class. This separates
+the restart phase's persistent session file from the proof phase.
 
 The single-worker profile uses `0x800`, yielding 2,048 decoded bytes. The nginx
 profile defaults to `0x440`, yielding 1,088 bytes. The shorter value keeps the
@@ -332,6 +416,9 @@ A2 is 279,369 bytes. It contains 115 short fillers, 880 depth-64 nested file
 fields, a 32-byte session ID, and `k0` as the progress value. Its bailout leaves
 a stale `PS(http_session_vars)` for B2 to reclaim.
 
+The same 32-byte ID is embedded in B2. `restart_proof.py` generates it per run
+so A2 and B2 share state without colliding with the one-byte IDs.
+
 ## Stage 5: B2
 
 B2 is 451,384 bytes for every supported command length. It contains 500 spray
@@ -367,7 +454,9 @@ when both markers and `uid=` are present.
 | A2 | 279,369 | `7af66c8f35c5fa6b47a539da6dca361d19543d9f62d61e4af891c2802bd5e236` |
 
 B2 embeds ASLR-derived addresses and therefore has a run-specific hash. A1 is
-the largest request and remains below 1,048,576 bytes.
+the largest request and remains below 1,048,576 bytes. The listed hashes use
+the default `a`, `a`, and 32-byte `a` session IDs. Restart-assisted IDs preserve
+the sizes but intentionally change the seed, B1, and A2 hashes.
 
 ## Failure meanings
 
@@ -378,8 +467,11 @@ the largest request and remains below 1,048,576 bytes.
 | `leak lacks a heap or PIE anchor` | leaked bytes did not contain a safe address pair for the selected binary |
 | HTTP 502 | nginx lost its PHP upstream or could not accept its response header |
 | HTTP 503 | the front service itself had no available backend |
+| restart B1 returns 502 and keeps the connection | the selected worker terminated and recovery can proceed |
+| bounded B1 returns 502 after restart | the recovery session was reused, the worker was not fresh, or the layout did not match |
 | nonce and `id`, without the ending nonce | `print-flag` failed and the proof is rejected |
 | `RESULT=REMOTE_RCE_CONFIRMED` | all six stages and the command callback passed validation |
+| `RESULT=RESTART_ASSISTED_RCE_CONFIRMED` | recycle, cold leak, ASLR resolution, and callback all passed validation |
 
 ## Fixed releases
 
