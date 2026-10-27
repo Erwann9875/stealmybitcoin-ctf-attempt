@@ -42,33 +42,15 @@ The durable transcript, artifact digest, source commit, and run links are in
 ## Exploit flow
 
 ```mermaid
-sequenceDiagram
-    participant C as remote_proof.py
-    participant N as nginx
-    participant P as PHP 8.4.26 worker
-
-    C->>N: seed multipart request
-    N->>P: controlled OOM during upload progress
-    Note over P: stale session globals survive cleanup
-
-    C->>N: readiness request
-    N->>P: allocator transition
-
-    C->>N: A1 multipart request
-    N->>P: controlled OOM and heap shaping
-
-    C->>N: B1 with forged zend_string length
-    P-->>C: PHPSESSID cookie containing heap and PIE pointers
-
-    C->>C: validate leak and resolve ASLR bases
-
-    C->>N: A2 multipart request
-    N->>P: stale PS(http_session_vars)
-
-    C->>N: B2 reference spray and forged HashTable
-    P->>P: pDestructor calls zif_system(command)
-    P-->>C: nonce, id, print-flag, nonce-end
+flowchart TD
+    A["1. Heap preparation<br/>seed + readiness + A1"] --> B["2. Address disclosure<br/>B1 response cookie"]
+    B --> C["3. Pointer calculation<br/>heap base + PHP base + zif_system"]
+    C --> D["4. Callback forgery<br/>A2 + B2"]
+    D --> E["5. Code execution<br/>id + print-flag"]
 ```
+
+All five stages must reach the same long-lived PHP worker. A persistent
+HTTP/1.1 connection through nginx preserves that worker affinity.
 
 The requests use ordinary HTTP/1.1 with `Content-Length`. The exploit does not
 use request smuggling, chunked-transfer ambiguity, or a `post_max_size` bypass.
