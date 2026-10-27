@@ -29,7 +29,7 @@ jobs:
           for fillers in 2 5 6 7; do
             docker run -d --name "cf-query-$fillers" -p 18087:80 cf-php-query
             until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.2; done
-            python query_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --query-order 1234 --leak-length 0x18000 --fillers "$fillers" > "/tmp/query-$fillers.log" 2>&1
+            python query_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --leak-length 0x18000 --fillers "$fillers" > "/tmp/query-$fillers.log" 2>&1
             query_status=$?
             docker rm -f "cf-query-$fillers"
             echo "QUERY_FILLERS=$fillers STATUS=$query_status"
