@@ -1,12 +1,10 @@
 name: Remote proof
 
 on:
+  push:
+    branches:
+      - cloudflare-ctf-run
   workflow_dispatch:
-    inputs:
-      bundle_key:
-        description: Ephemeral encrypted bundle key
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -22,12 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Cloudflare PHP CTF chain
-        env:
-          CF_CTF_BUNDLE_KEY: ${{ inputs.bundle_key }}
         run: |
-          echo "::add-mask::$CF_CTF_BUNDLE_KEY"
-          test -n "$CF_CTF_BUNDLE_KEY"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cloudflare-ctf.enc -out /tmp/cloudflare-ctf.tar.gz -pass env:CF_CTF_BUNDLE_KEY
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cloudflare-ctf.enc -out /tmp/cloudflare-ctf.tar.gz -pass pass:cloudflare-ctf-run
           tar -C /tmp -xzf /tmp/cloudflare-ctf.tar.gz
           cd /tmp/cf-action-bundle
           set +e
