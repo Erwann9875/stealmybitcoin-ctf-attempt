@@ -27,7 +27,7 @@ jobs:
           mkdir -p /tmp/cloudflare-php-ctf /tmp/layout-variants /tmp/cloudflare-proof
           python build_layout_variants.py b1-all-windows-20000-files160.bin /tmp/layout-variants >/tmp/layout-build.log
           set +e
-          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 /tmp/layout-variants/160-post-forge.bin --query-order 1234 --leak-length 0x18000 --pipeline-pairs --b1-attempts 6 --b2-attempts 6 > /tmp/cloudflare-proof/run.log 2>&1
+          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 /tmp/layout-variants/160-post-forge.bin --query-order 1234 --leak-length 0x18000 --b1-attempts 6 --b2-attempts 6 > /tmp/cloudflare-proof/run.log 2>&1
           status=$?
           cat /tmp/cloudflare-proof/run.log
           exit "$status"
