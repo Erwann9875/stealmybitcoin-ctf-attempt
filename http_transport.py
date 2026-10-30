@@ -1,36 +1,16 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 import http.client
 import ssl
 import urllib.parse
-import urllib.request
 
-@dataclass(frozen=True, slots=True)
-class HttpTarget:
-    scheme: str
-    host: str
-    port: int
+CHALLENGE_HOST = "old.stealmybitcoin.com"
+CHALLENGE_PORT = 443
+CHALLENGE_ORIGIN = f"https://{CHALLENGE_HOST}"
+CHALLENGE_ENDPOINT = "/ping.php"
+CHALLENGE_READINESS_PATH = "/php-version.php"
 
-    @classmethod
-    def parse(cls, value: str) -> HttpTarget:
-        parsed = urllib.parse.urlsplit(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("target must be an absolute HTTP or HTTPS URL")
-        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-            raise ValueError("target URL must not contain a path, query, or fragment")
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        return cls(parsed.scheme, parsed.hostname, port)
-
-    @property
-    def authority(self) -> str:
-        default = 443 if self.scheme == "https" else 80
-        return self.host if self.port == default else f"{self.host}:{self.port}"
-
-    @property
-    def origin(self) -> str:
-        return f"{self.scheme}://{self.authority}"
 
 @dataclass(frozen=True, slots=True)
 class HttpRequest:
@@ -45,8 +25,15 @@ class HttpRequest:
         return cls("GET", path, close=close)
 
     @classmethod
-    def post(cls, path: str, body: bytes, boundary: bytes, close: bool = False) -> HttpRequest:
+    def post(
+        cls,
+        path: str,
+        body: bytes,
+        boundary: bytes,
+        close: bool = False,
+    ) -> HttpRequest:
         return cls("POST", path, body, boundary, close)
+
 
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
@@ -56,10 +43,6 @@ class HttpResponse:
     body: bytes
     closes_connection: bool
 
-    def header(self, name: str) -> str | None:
-        lowered = name.lower()
-        return next((value for key, value in self.headers if key.lower() == lowered), None)
-
     def session_cookie(self) -> bytes:
         marker = "PHPSESSID="
         for name, value in self.headers:
@@ -67,6 +50,7 @@ class HttpResponse:
                 encoded = value.split(marker, 1)[1].split(";", 1)[0]
                 return urllib.parse.unquote_to_bytes(encoded.replace("+", " "))
         return b""
+
 
 class SharedReader:
     def __init__(self, stream: object):
@@ -84,6 +68,7 @@ class SharedReader:
     def close(self) -> None:
         return None
 
+
 class SharedSocket:
     def __init__(self, reader: SharedReader):
         self.reader = reader
@@ -91,22 +76,27 @@ class SharedSocket:
     def makefile(self, *_args: object, **_kwargs: object) -> SharedReader:
         return self.reader
 
+
 class PersistentHttpClient:
-    def __init__(self, target: HttpTarget, timeout: float, use_proxy: bool = True):
-        self.target = target
+    """Direct TLS client locked to the authorized challenge host."""
+
+    def __init__(self, timeout: float):
         self.timeout = timeout
-        self.use_proxy = use_proxy
-        self.connection: http.client.HTTPConnection | None = None
+        self.connection: http.client.HTTPSConnection | None = None
         self.stream: object | None = None
         self.reader: SharedReader | None = None
-        self.absolute_form = False
         self.closed_by_peer = False
 
     def __enter__(self) -> PersistentHttpClient:
-        self.connection = self._create_connection()
+        self.connection = http.client.HTTPSConnection(
+            CHALLENGE_HOST,
+            CHALLENGE_PORT,
+            timeout=self.timeout,
+            context=ssl.create_default_context(),
+        )
         self.connection.connect()
         if self.connection.sock is None:
-            raise ConnectionError("HTTP connection did not yield a socket")
+            raise ConnectionError("HTTPS connection did not yield a socket")
         self.connection.sock.settimeout(self.timeout)
         self.stream = self.connection.sock.makefile("rb")
         self.reader = SharedReader(self.stream)
@@ -118,17 +108,14 @@ class PersistentHttpClient:
         if self.connection is not None:
             self.connection.close()
 
-    def get(self, path: str, close: bool = False) -> HttpResponse:
-        return self.pipeline((HttpRequest.get(path, close),))[0]
-
-    def post(self, path: str, body: bytes, boundary: bytes, close: bool = False) -> HttpResponse:
-        return self.pipeline((HttpRequest.post(path, body, boundary, close),))[0]
-
-    def pipeline(self, requests: tuple[HttpRequest, ...]) -> tuple[HttpResponse, ...]:
+    def pipeline(
+        self,
+        requests: tuple[HttpRequest, ...],
+    ) -> tuple[HttpResponse, ...]:
         if self.connection is None or self.connection.sock is None or self.reader is None:
-            raise RuntimeError("HTTP client is not connected")
+            raise RuntimeError("HTTPS client is not connected")
         if self.closed_by_peer:
-            raise ConnectionError("the previous response closed the persistent connection")
+            raise ConnectionError("the challenge closed the persistent connection")
         if not requests:
             raise ValueError("pipeline must contain at least one request")
         frames = tuple(self._frame(request) for request in requests)
@@ -138,12 +125,10 @@ class PersistentHttpClient:
         return responses
 
     def _frame(self, request: HttpRequest) -> bytes:
-        if not request.path.startswith("/") or not request.path.isascii():
-            raise ValueError("request path must be absolute and ASCII")
-        target = self.target.origin + request.path if self.absolute_form else request.path
+        self._require_allowed_request(request)
         headers = (
-            f"{request.method} {target} HTTP/1.1\r\n"
-            f"Host: {self.target.authority}\r\n"
+            f"{request.method} {request.path} HTTP/1.1\r\n"
+            f"Host: {CHALLENGE_HOST}\r\n"
             f"Connection: {'close' if request.close else 'keep-alive'}\r\n"
         )
         if request.body is None:
@@ -154,48 +139,44 @@ class PersistentHttpClient:
             raise ValueError("multipart boundary is required for a request body")
         entity_headers = (
             f"Content-Length: {len(request.body)}\r\n"
-            f"Content-Type: multipart/form-data; boundary={request.boundary.decode('ascii')}\r\n\r\n"
+            "Content-Type: multipart/form-data; boundary="
+            f"{request.boundary.decode('ascii')}\r\n\r\n"
         )
         return headers.encode("ascii") + entity_headers.encode("ascii") + request.body
 
+    @staticmethod
+    def _require_allowed_request(request: HttpRequest) -> None:
+        if not request.path.isascii() or any(
+            ord(character) <= 0x20 or ord(character) == 0x7F
+            for character in request.path
+        ):
+            raise ValueError("request path must be printable ASCII without spaces")
+        parsed = urllib.parse.urlsplit(request.path)
+        if parsed.scheme or parsed.netloc or parsed.fragment:
+            raise ValueError("request path must be a relative challenge URL")
+        if (
+            request.method == "GET"
+            and parsed.path == CHALLENGE_READINESS_PATH
+            and not parsed.query
+        ):
+            return
+        if request.method == "POST" and parsed.path == CHALLENGE_ENDPOINT:
+            return
+        raise ValueError("request is outside the authorized challenge paths")
+
     def _response(self) -> HttpResponse:
         if self.reader is None:
-            raise RuntimeError("HTTP response reader is not available")
+            raise RuntimeError("HTTPS response reader is not available")
         source = http.client.HTTPResponse(SharedSocket(self.reader))
         source.begin()
         try:
             body = source.read()
         except http.client.IncompleteRead as error:
             body = error.partial
-        return HttpResponse(source.status, source.reason, tuple(source.getheaders()), body, source.will_close)
-
-    def _create_connection(self) -> http.client.HTTPConnection:
-        proxy = self._proxy()
-        if proxy is None:
-            if self.target.scheme == "https":
-                return http.client.HTTPSConnection(self.target.host, self.target.port, timeout=self.timeout, context=ssl.create_default_context())
-            return http.client.HTTPConnection(self.target.host, self.target.port, timeout=self.timeout)
-        if proxy.scheme != "http" or not proxy.hostname:
-            raise ValueError("only HTTP proxy URLs are supported")
-        port = proxy.port or 80
-        if self.target.scheme == "https":
-            connection = http.client.HTTPSConnection(proxy.hostname, port, timeout=self.timeout, context=ssl.create_default_context())
-            connection.set_tunnel(self.target.host, self.target.port, self._proxy_headers(proxy))
-            return connection
-        self.absolute_form = True
-        return http.client.HTTPConnection(proxy.hostname, port, timeout=self.timeout)
-
-    def _proxy(self) -> urllib.parse.SplitResult | None:
-        if not self.use_proxy or urllib.request.proxy_bypass(self.target.host):
-            return None
-        value = urllib.request.getproxies().get(self.target.scheme)
-        return urllib.parse.urlsplit(value) if value else None
-
-    @staticmethod
-    def _proxy_headers(proxy: urllib.parse.SplitResult) -> dict[str, str]:
-        if proxy.username is None:
-            return {}
-        username = urllib.parse.unquote(proxy.username)
-        password = urllib.parse.unquote(proxy.password or "")
-        token = base64.b64encode(f"{username}:{password}".encode()).decode()
-        return {"Proxy-Authorization": "Basic " + token}
+        return HttpResponse(
+            source.status,
+            source.reason,
+            tuple(source.getheaders()),
+            body,
+            source.will_close,
+        )
